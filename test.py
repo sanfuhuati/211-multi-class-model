@@ -9,24 +9,15 @@ from torch.utils.data import DataLoader
 import torch.nn as nn
 import torch.optim as optim
 import torchvision.models as models
-from sklearn.metrics import precision_score, recall_score, f1_score, accuracy_score,hamming_loss
 from torch.utils.data import Subset
 from torchmetrics.classification import MultilabelF1Score ,MultilabelPrecision, MultilabelRecall, HammingDistance
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
+# Load JSON file and extract labels
 with open('instances_train2017.json', 'r') as file:
     coco_data = json.load(file)
-with open('instances_val2017.json', 'r') as file:
+with open('instances_val2014.json', 'r') as file:
     coco_data_val = json.load(file)
-
-# for top_key in coco_data:
-#     first_level_data = coco_data[top_key]
-#     if isinstance(first_level_data, dict):
-#         child_keys = first_level_data.keys()
-#     elif isinstance(first_level_data, list) and len(first_level_data) > 0:
-#         child_keys = first_level_data[0].keys()
-#     print(f"{top_key}: {list(child_keys)}")
 
 """
 info: ['description', 'url', 'version', 'year', 'contributor', 'date_created']
@@ -62,97 +53,83 @@ categories: ['supercategory', 'id', 'name']
 }
 """
 
-"""
-image_category: image_id,[category_id]
-image_labels:
-"""
+NUM_CLASSES = 90
+
+# image_category: image_id,[category_id]
 image_category = defaultdict(list)
 for ann in coco_data["annotations"]:
     image_category[ann["image_id"]].append(ann["category_id"])
-NUM_CLASSES = 90
-image_labels = {}
 
 image_category_val = defaultdict(list)
 for ann in coco_data_val["annotations"]:
     image_category_val[ann["image_id"]].append(ann["category_id"])
-NUM_CLASSES = 90
 
-def get_label_vector(image_id):
+def get_label_vector(image_id,image_category):
     """
     Get the label vector for the given image ID.
     :param image_id: int, the ID of the image
+    :param dataset: array, the 
     :return: np.ndarray, a vector indicating the categories for this image
     """
 
     categories = image_category[image_id]
-
     label_vector = torch.zeros(NUM_CLASSES, dtype=torch.float32)
     for cat_id in categories:
         if 1 <= cat_id <= NUM_CLASSES:
             label_vector[cat_id - 1] = 1
-    image_labels[image_id] = label_vector
-    
-    return label_vector
-
-def get_val_label_vector(image_id):
-    """
-    Get the label vector for the given image ID.
-    :param image_id: int, the ID of the image
-    :return: np.ndarray, a vector indicating the categories for this image
-    """
-
-    categories = image_category_val[image_id]
-
-    label_vector = torch.zeros(NUM_CLASSES, dtype=torch.float32)
-
-    for cat_id in categories:
-        if 1 <= cat_id <= NUM_CLASSES:
-            label_vector[cat_id - 1] = 1
-    image_labels[image_id] = label_vector
     
     return label_vector
 
 train_dir = "train2017"
-val_dir = "val2017"
+val_dir = "val2014"
 
+train_transform = transforms.Compose([
+    transforms.Resize((256, 256)),  # 先调整到稍大的尺寸
+    transforms.RandomResizedCrop(224, scale=(0.8, 1.0)),  # 随机裁剪并调整到 224x224
+    transforms.RandomHorizontalFlip(p=0.5),  # 随机水平翻转
+    transforms.RandomRotation(degrees=15),  # 随机旋转 ±15 度
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # 颜色抖动
+    transforms.ToTensor(),  # 转换为张量
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # 标准化
+])
+
+# Graphic Conversion
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
+# Sampling the dataset and selecting a certain proportion of data for training
 train_data = datasets.CocoDetection(
     root = train_dir,
     annFile = "instances_train2017.json",
-    transform = transform
+    transform = train_transform
 )
 num_samples = len(train_data)
-num_subset = int(num_samples *1)
-subset_indices = list(range(num_subset))  # 前 10% 的索引
+num_subset = int(num_samples * 0.05)
+subset_indices = list(range(num_subset))
 train_subset = Subset(train_data, subset_indices)
 
-# get one line for test
-# print(train_data[0])
-
+# Sampling the dataset and selecting a certain proportion of data for validation
 val_data = datasets.CocoDetection(
     root = val_dir,
-    annFile = "instances_val2017.json",
+    annFile = "instances_val2014.json",
     transform = transform
 )
-
 num_val_samples = len(val_data)
-num_val_subset = int(num_val_samples * 1)
-val_subset_indices = list(range(num_val_subset))  # 前 10% 的索引
+num_val_subset = int(num_val_samples * 0.1)
+val_subset_indices = list(range(num_val_subset))
 val_subset = Subset(val_data, val_subset_indices)
 
-
+# Organize batch data in DataLoader to ensure that it can be correctly converted into tensor format and input into the model
 def collate_fn(batch):
     images = [item[0] for item in batch]
     annotations = [item[1] for item in batch]
     images = torch.stack(images)
     return images, annotations
 
-
+# Load training set
 train_loader = DataLoader(
     train_subset,
     batch_size=128,
@@ -161,6 +138,10 @@ train_loader = DataLoader(
     collate_fn=collate_fn
 )
 
+# for batch in train_loader:
+#     print(batch)
+#     break
+# Load validation set
 val_loader = DataLoader(
     val_subset,
     batch_size=128,
@@ -169,24 +150,18 @@ val_loader = DataLoader(
     collate_fn=collate_fn
 )
 
+# Using ResNet Neural Network Model
 class MultiLabelResNet(nn.Module):
     def __init__(self, NUM_CLASSES=90):
         super(MultiLabelResNet, self).__init__()
         self.resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
         self.resnet.fc = nn.Sequential(
-            nn.Dropout(0.5),  # Dropout 层
+            nn.Dropout(0.5),  # Dropout
             nn.Linear(2048, NUM_CLASSES)
         )
 
     def forward(self, x):
         return self.resnet(x)
-
-
-model = MultiLabelResNet(NUM_CLASSES).to(device)
-print(f"Using device: {device}")
-criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
 
 def evaluate_model(model, data_loader, device):
@@ -203,7 +178,7 @@ def evaluate_model(model, data_loader, device):
 
             for t in targets:
                 if t is not None and isinstance(t, list) and len(t) > 0 and isinstance(t[0], dict):
-                    label = get_val_label_vector(t[0]["image_id"])
+                    label = get_label_vector(t[0]["image_id"] , image_category = image_category_val)
                     # print(label)
                     batch_labels.append(label)
                 else:
@@ -220,16 +195,9 @@ def evaluate_model(model, data_loader, device):
             preds = (torch.sigmoid(outputs) > 0.5).float()
             all_preds.append(preds.cpu())
             all_labels.append(labels.cpu())
-    # print(all_labels[0])
+
     all_preds = torch.cat(all_preds, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
-    # print(all_preds[0])
-    # print(all_labels[0])
-    # precision = precision_score(all_labels.flatten(), all_preds.flatten(),average='micro', zero_division=0)
-    # recall = recall_score(all_labels.flatten(), all_preds.flatten(), average='micro',zero_division=0)
-    # f1 = f1_score(all_labels.flatten(), all_preds.flatten(), average='micro',zero_division=0)
-    # accuracy = accuracy_score(all_labels.flatten(), all_preds.flatten())
-    # hamming_loss1 = hamming_loss(all_labels, all_preds)
 
     precision_cal= MultilabelPrecision(num_labels= 90, average="micro")
     recall_cal = MultilabelRecall(num_labels= 90, average="micro")
@@ -239,41 +207,60 @@ def evaluate_model(model, data_loader, device):
     precision = precision_cal(all_preds, all_labels)
     recall = recall_cal(all_preds, all_labels)
     hamming_loss1 = hamming(all_preds, all_labels)
-    accuracy = 1 - hamming_loss1
+    Hamming_Accuracy = 1 - hamming_loss1
     f1 = f1_cal(all_preds, all_labels)
     avg_loss = total_loss / total_samples
 
-    return precision, recall, f1, accuracy, avg_loss, hamming_loss1
-8
-num_epochs = 10
-for epoch in range(num_epochs):
-    model.train()
-    total_loss = 0
+    return precision, recall, f1, Hamming_Accuracy, avg_loss, hamming_loss1
 
-    for batch_idx, (images, targets) in enumerate(train_loader):
-        batch_labels = []
-        images = images.to(device)
-        for t in targets:
-            if t is not None and isinstance(t, list) and len(t) > 0 and isinstance(t[0], dict):                
-                label = get_label_vector(t[0]["image_id"])
-                batch_labels.append(label)
-            else:
-                default_label = torch.zeros(90, dtype=torch.float32)
-                batch_labels.append(default_label)
 
-        labels = torch.stack(batch_labels).to(device)
-        optimizer.zero_grad()
-        outputs = model(images)
-        loss = criterion(outputs, labels)
-        loss.backward()
-        optimizer.step()
+def train_model(model,data_loader,num_epochs,optimizer,device):
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss = 0
 
-        total_loss += loss.item()
-        print(total_loss)
-        if batch_idx % 5== 0:
-            print(f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx}/{len(train_loader)}], Loss: {loss.item():.4f}")
-    scheduler.step()        
+        for batch_idx, (images, targets) in enumerate(data_loader):
+            batch_labels = []
+            images = images.to(device)
+            for t in targets:
+                if t is not None and isinstance(t, list) and len(t) > 0 and isinstance(t[0], dict):                
+                    label = get_label_vector(t[0]["image_id"], image_category = image_category)
+                    batch_labels.append(label)
+                else:
+                    default_label = torch.zeros(90, dtype=torch.float32)
+                    batch_labels.append(default_label)
 
-    precision, recall, f1, subset_accuracy, val_loss,hamming_loss1 = evaluate_model(model, val_loader, device)
-    print(f"Validation Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}, Subset Accuracy: {subset_accuracy:.4f}, Val Loss: {val_loss:.4f}, hamming loss:{hamming_loss1:.4f}")
-    print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss / len(train_loader):.4f}")
+            labels = torch.stack(batch_labels).to(device)
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            print(total_loss)
+            if batch_idx % 5== 0:
+                print(f"Epoch [{epoch+1}/{num_epochs}], Step [{batch_idx}/{len(train_loader)}], Loss: {loss.item():.4f}")
+        # scheduler.step()
+
+        precision, recall, f1, Hamming_Accuracy, val_loss,hamming_loss1 = evaluate_model(model, val_loader, device)
+        print(f"Validation Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}, Hamming Accuracy: {Hamming_Accuracy:.4f}, Val Loss: {val_loss:.4f}, hamming loss:{hamming_loss1:.4f}")
+        print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {total_loss / len(train_loader):.4f}")
+
+# model = MultiLabelResNet(NUM_CLASSES).to(device)
+# print(f"Using device: {device}")
+criterion = nn.BCEWithLogitsLoss()
+# SGD
+# optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=1e-4)
+# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+
+# Adamw
+# optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=1e-2)
+# num_epochs = 10
+# train_model(model,train_loader,num_epochs,optimizer,device)
+# torch.save(model, 'model.pth')
+
+# test model
+model = torch.load('model.pth', weights_only=False)
+precision, recall, f1, Hamming_Accuracy, val_loss,hamming_loss1 = evaluate_model(model, val_loader, device)
+print(f"Validation Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}, Hamming Accuracy: {Hamming_Accuracy:.4f}, Val Loss: {val_loss:.4f}, hamming loss:{hamming_loss1:.4f}")
