@@ -11,12 +11,28 @@ import torch.optim as optim
 import torchvision.models as models
 from torch.utils.data import Subset
 from torchmetrics.classification import MultilabelF1Score ,MultilabelPrecision, MultilabelRecall, HammingDistance
+import matplotlib.pyplot as plt
+from sklearn.metrics import precision_recall_curve,precision_score, recall_score
+from pictureplot import plot_precision_recall_vs_iterations,plot_pr_curve,plot_precision_recall
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def plot_precision_recall(precision, recall, labels, title='Precision and Recall for Each Label'):
+    plt.figure(figsize=(10, 6))
+    plt.plot(labels, precision, marker='o', label='Precision', color='blue', linestyle='-', linewidth=2)
+    plt.plot(labels, recall, marker='s', label='Recall', color='red', linestyle='--', linewidth=2)
+    plt.title(title, fontsize=16)
+    plt.xlabel('Labels', fontsize=14)
+    plt.ylabel('Score', fontsize=14)
+    plt.ylim(0, 1)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+    plt.show()
 
 # Load JSON file and extract labels
 with open('instances_train2017.json', 'r') as file:
     coco_data = json.load(file)
-with open('instances_val2014.json', 'r') as file:
+with open('instances_val2017.json', 'r') as file:
     coco_data_val = json.load(file)
 
 """
@@ -53,7 +69,16 @@ categories: ['supercategory', 'id', 'name']
 }
 """
 
-NUM_CLASSES = 90
+def get_labels_name():
+    labels_names = []
+    for cat in coco_data["categories"]:
+        name = cat["name"]
+        labels_names.append(name)
+    return labels_names
+
+labels_name = get_labels_name()
+
+NUM_CLASSES = 80
 
 # image_category: image_id,[category_id]
 image_category = defaultdict(list)
@@ -75,13 +100,28 @@ def get_label_vector(image_id,image_category):
     categories = image_category[image_id]
     label_vector = torch.zeros(NUM_CLASSES, dtype=torch.float32)
     for cat_id in categories:
-        if 1 <= cat_id <= NUM_CLASSES:
+        if 1 <= cat_id < 12:
             label_vector[cat_id - 1] = 1
-    
+        elif 13<= cat_id <26:
+            label_vector[cat_id - 2] = 1
+        elif 27<= cat_id <29:
+            label_vector[cat_id - 3] = 1
+        elif 31<= cat_id <46:
+            label_vector[cat_id - 5] = 1
+        elif 47<= cat_id <66:
+            label_vector[cat_id - 6] = 1
+        elif cat_id == 67:
+            label_vector[cat_id - 7] = 1
+        elif cat_id == 70:
+            label_vector[cat_id - 9] = 1
+        elif 72<= cat_id <83:
+            label_vector[cat_id - 10] = 1
+        elif 84<= cat_id <= 90:
+            label_vector[cat_id - 11] = 1
     return label_vector
 
 train_dir = "train2017"
-val_dir = "val2014"
+val_dir = "val2017"
 
 train_transform = transforms.Compose([
     transforms.Resize((256, 256)),  # 先调整到稍大的尺寸
@@ -106,19 +146,21 @@ train_data = datasets.CocoDetection(
     annFile = "instances_train2017.json",
     transform = train_transform
 )
+
 num_samples = len(train_data)
-num_subset = int(num_samples * 0.05)
+num_subset = int(num_samples * 0.005)
 subset_indices = list(range(num_subset))
 train_subset = Subset(train_data, subset_indices)
 
 # Sampling the dataset and selecting a certain proportion of data for validation
 val_data = datasets.CocoDetection(
     root = val_dir,
-    annFile = "instances_val2014.json",
+    annFile = "instances_val2017.json",
     transform = transform
 )
+
 num_val_samples = len(val_data)
-num_val_subset = int(num_val_samples * 0.1)
+num_val_subset = int(num_val_samples)
 val_subset_indices = list(range(num_val_subset))
 val_subset = Subset(val_data, val_subset_indices)
 
@@ -138,9 +180,6 @@ train_loader = DataLoader(
     collate_fn=collate_fn
 )
 
-# for batch in train_loader:
-#     print(batch)
-#     break
 # Load validation set
 val_loader = DataLoader(
     val_subset,
@@ -152,7 +191,7 @@ val_loader = DataLoader(
 
 # Using ResNet Neural Network Model
 class MultiLabelResNet(nn.Module):
-    def __init__(self, NUM_CLASSES=90):
+    def __init__(self, NUM_CLASSES=80):
         super(MultiLabelResNet, self).__init__()
         self.resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
         self.resnet.fc = nn.Sequential(
@@ -162,7 +201,6 @@ class MultiLabelResNet(nn.Module):
 
     def forward(self, x):
         return self.resnet(x)
-
 
 def evaluate_model(model, data_loader, device):
     model.eval()
@@ -198,10 +236,19 @@ def evaluate_model(model, data_loader, device):
 
     all_preds = torch.cat(all_preds, dim=0)
     all_labels = torch.cat(all_labels, dim=0)
+ 
+    precision_labels = precision_score(all_labels, all_preds, average = None,zero_division=0)  # average=None 表示计算每个标签的指标
+    recall_labels = recall_score(all_labels, all_preds, average = None,zero_division=0)
+    print(precision_labels)
+    # print(precision_labels)
+    # for i in range(len(labels_name)):
+    #     print(f"Label {i}: Precision = {precision_labels[i]:.4f}, Recall = {recall_labels[i]:.4f}")
 
-    precision_cal= MultilabelPrecision(num_labels= 90, average="micro")
-    recall_cal = MultilabelRecall(num_labels= 90, average="micro")
-    f1_cal = MultilabelF1Score(num_labels=90, average="micro")
+    plot_precision_recall(precision_labels,recall_labels,labels_name,title='Precision and Recall for Each Label')
+
+    precision_cal= MultilabelPrecision(num_labels= 80, average="micro")
+    recall_cal = MultilabelRecall(num_labels= 80, average="micro")
+    f1_cal = MultilabelF1Score(num_labels=80, average="micro")
     hamming = HammingDistance(task="multilabel", num_labels=NUM_CLASSES)
     
     precision = precision_cal(all_preds, all_labels)
@@ -210,7 +257,7 @@ def evaluate_model(model, data_loader, device):
     Hamming_Accuracy = 1 - hamming_loss1
     f1 = f1_cal(all_preds, all_labels)
     avg_loss = total_loss / total_samples
-
+    
     return precision, recall, f1, Hamming_Accuracy, avg_loss, hamming_loss1
 
 
@@ -227,7 +274,7 @@ def train_model(model,data_loader,num_epochs,optimizer,device):
                     label = get_label_vector(t[0]["image_id"], image_category = image_category)
                     batch_labels.append(label)
                 else:
-                    default_label = torch.zeros(90, dtype=torch.float32)
+                    default_label = torch.zeros(80, dtype=torch.float32)
                     batch_labels.append(default_label)
 
             labels = torch.stack(batch_labels).to(device)
@@ -261,6 +308,13 @@ criterion = nn.BCEWithLogitsLoss()
 # torch.save(model, 'model.pth')
 
 # test model
-model = torch.load('model.pth', weights_only=False)
+model = torch.load('model_alldata.pth', weights_only=False)
 precision, recall, f1, Hamming_Accuracy, val_loss,hamming_loss1 = evaluate_model(model, val_loader, device)
 print(f"Validation Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}, Hamming Accuracy: {Hamming_Accuracy:.4f}, Val Loss: {val_loss:.4f}, hamming loss:{hamming_loss1:.4f}")
+
+"""
+3/12迭代
+更新最新算法为80类
+加入图像
+加入用户端输入
+"""
